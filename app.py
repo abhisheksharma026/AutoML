@@ -35,10 +35,10 @@ class AutoML(object):
         cat_variables = [var for var in self.cols if self.df[var].dtype == 'O']
         self.cat_vars = [s for s in cat_variables if s != self.target]
 
-    def splitting(self):
+    def class_splitting(self):
         self.cols = [cols for cols in self.cols if cols != self.target]
         num_variables = [var for var in self.df.columns if self.df[var].dtype != 'O']
-        print("Numeric Columns : ", num_variables)
+        # print("Numeric Columns : ", num_variables)
         num_vars = [s for s in num_variables if s != self.target]
         
         for cols in num_vars:
@@ -56,6 +56,23 @@ class AutoML(object):
         y_test = self.lb.transform(y_test)
 
         return X_train, X_test, y_train, y_test, self.classes, self.lb
+
+    def reg_splitting(self):
+        self.cols = [cols for cols in self.cols if cols != self.target]
+        num_variables = [var for var in self.df.columns if self.df[var].dtype != 'O']
+        print("Numeric Columns : ", num_variables)
+        num_vars = [s for s in num_variables if s != self.target]
+        
+        for cols in num_vars:
+            self.df[cols].fillna(value=self.df[cols].mean(), inplace=True)
+        self.df.dropna(inplace=True)
+        
+        X = self.df[self.cols]
+        y = self.df[self.target]
+
+        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size= 0.3, random_state=42)
+
+        return X_train, X_test, y_train, y_test
 
     def roc_auc_metric(self):
         if self.n_classes == 2:
@@ -100,12 +117,66 @@ class AutoML(object):
             plt.legend(loc="lower right")
             plt.show()
 
+    def thresh_col(self):
+        counts = {}
+        col_names = []
+        col_vals = []
+        for cols in self.cat_vars:
+            col_names.append(cols)
+            col_vals.append(df[cols].nunique())
+
+        counts = dict(zip(col_names, col_vals))
+        keymax = max(counts, key=counts.get)
+        return keymax
+
+    def set_threshold_downsample(self):
+        if self.df[self.target].nunique() == 2:
+            threshold = min(1.5 * min(self.df[self.target].value_counts()), max(self.df[self.target].value_counts()))
+            print(threshold)
+            return int(threshold)
+
+    def undersample(self, dataframe, column, basis_col, count, sample_count):
+        
+        above = pd.DataFrame()
+        below = pd.DataFrame()
+        data = pd.DataFrame()
+        df = dataframe.copy(deep=True)
+        col = column
+        
+        max_val = df[basis_col].value_counts().head(1).values[0]
+        n = min(max_val, df[basis_col].value_counts().min())
+        stratified = df.groupby(basis_col).apply(lambda x: x.sample(n))
+        stratified.index = stratified.index.droplevel(0)
+        
+        above_count = pd.DataFrame(df[col].value_counts() > count)
+        below_count = pd.DataFrame(df[col].value_counts() < count)
+        
+        to_sample = above_count[above_count[col] == True].index.tolist()
+        not_sample = below_count[below_count[col] == True].index.tolist()
+        
+        for val in to_sample: # Sample with the given sample_count value 
+            above = above.append(df[df[col] == val].sample(n = sample_count, 
+                                                        replace = True,
+                                                        random_state=1))
+        
+        for val in not_sample:
+            below = below.append(df[df[col] == val]) # Without Sampling for values less than given count
+            
+        data = pd.concat([above, stratified, below])
+        return data
+
     def catboost_class_cv(self, params, param_names):
 
         params = dict(zip(param_names, params))
         
         self.extract_cols() # Extract the cat_features
-        self.X_train, self.X_test, self.y_train, self.y_test, self.classes , self.lb = self.splitting()
+
+        if self.df[self.target].nunique() == 2:
+            down_threshold = self.set_threshold_downsample()
+            self.df = self.undersample(self.df, self.target, self.thresh_col(), down_threshold, down_threshold)
+            # classify.class_dist()
+
+        self.X_train, self.X_test, self.y_train, self.y_test, self.classes , self.lb = self.class_splitting()
 
         if len(self.classes) == 2:
             self.objective = "CrossEntropy"
@@ -195,7 +266,7 @@ class AutoML(object):
         params = dict(zip(param_names, params))
         
         self.extract_cols() # Extract the cat_features
-        self.X_train, self.X_test, self.y_train, self.y_test, self.classes , self.lb = self.splitting()
+        self.X_train, self.X_test, self.y_train, self.y_test = self.reg_splitting()
 
         params['loss_function'] = 'RMSE'
 
@@ -205,7 +276,7 @@ class AutoML(object):
 
         scores = cv(cv_dataset, params, fold_count=3, iterations=100, verbose=100, early_stopping_rounds=5)
         print(scores)
-        return scores['test-R2-mean'].max()
+        return scores['test-RMSE-mean'].max()
 
 
     def regression(self):
@@ -233,7 +304,7 @@ class AutoML(object):
             depth=int(params['depth']),
             random_seed=42,
             verbose=100,
-            loss_function=params['loss_function']
+            loss_function='RMSE'
         )
 
         self.model.fit(self.X_train, self.y_train, cat_features=self.cat_vars, early_stopping_rounds=5)
@@ -245,26 +316,33 @@ class AutoML(object):
         print("RMSE :", rmse)
         print()
 
-        shap_values = self.model.get_feature_importance(Pool(self.X_test, self.y_test, cat_features = self.cat_vars), type='ShapValues')
-        shap.summary_plot(list(shap_values), features = self.X_train, class_names = self.classes, plot_type='bar')
-        print("Regression Model Finished Running")
+        importances = pd.DataFrame(self.model.get_feature_importance(prettified=True), columns = ["Feature Id", "Importances"])
+        print()
+        print(importances.head(20))
+        print()
+        shap_values = self.model.get_feature_importance(Pool(self.X_test, self.y_test, cat_features=self.cat_vars), type = "ShapValues")
+        shap_values = shap_values[:,:-1]
+
+        shap.summary_plot(shap_values, self.X_test)
+        
+        print("Regression Model Ran Successfully.....!!!")
 
 
 if __name__ == "__main__":
     start = time.time()
-    # df = pd.read_csv(r"C:\Users\Abhishek\Downloads\Income\adult.csv")
-    # df = pd.read_csv(r"C:\Users\Abhishek\Desktop\Git Projects\AutoML\data\WearableComputing.csv")
-    # classify = AutoML(df, "income", "classification", "GPU")
-    # classify = AutoML(df, "classe", "classification", "GPU")
-    # classify.class_dist()
-    # classify.classification()
+    df = pd.read_csv(r"C:\AutoML\data\adult.csv")
+    df = df.loc[:, ~df.columns.str.contains('^Unnamed')]
+    #df = pd.read_csv(r"C:\Users\Abhishek\Desktop\Git Projects\AutoML\data\WearableComputing.csv")
+    classify = AutoML(df, "income", "classification", "CPU")
+    #classify = AutoML(df, "classe", "classification", "GPU")
+    classify.class_dist()
+    classify.classification()
 
-    df = pd.read_csv(r"C:\Users\Abhishek\Desktop\Git Projects\AutoML\data\housing.csv")
-    reg = AutoML(df, "medv", "regression", "GPU")
-    reg.regression()
+    # df = pd.read_csv(r"C:\AutoML\data\housing.csv")
+    # reg = AutoML(df, "medv", "regression", "CPU")
+    # reg.regression()
     stop = time.time()
     total_time = (stop - start)
-    # https://archive.ics.uci.edu/ml/datasets/Weight+Lifting+Exercises+monitored+with+Inertial+Measurement+Units
 
     print(f"Time taken for process is {total_time/60} mins.")
 
