@@ -289,6 +289,7 @@ class AutoML(object):
         result = gp_minimize(optimization_func,
                              dimensions = reg_hyperparameter_space,
                              n_random_starts = 3,
+                             n_jobs=-1,
                              n_calls= 7,
                              verbose=True,
                              random_state=42)
