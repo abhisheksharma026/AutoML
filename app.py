@@ -239,8 +239,6 @@ class AutoML(object):
         else:
             multi_class = 'raise'
             roc_value = roc_auc_score(self.y_test, proba[: , 1])
-            print("The ROC-AUC of the model is:", roc_value)
-            roc_value = roc_auc_score(self.y_test, proba[: , 1])
         
         print("The ROC-AUC of the model is:", roc_value)
         #self.roc_auc_metric()
@@ -330,7 +328,7 @@ class AutoML(object):
 
 if __name__ == "__main__":
     start = time.time()
-    df = pd.read_csv(r"C:\AutoML\data\adult.csv")
+    df = pd.read_csv(r"C:\Users\Abhishek\Downloads\adult.csv")
     df = df.loc[:, ~df.columns.str.contains('^Unnamed')]
     #df = pd.read_csv(r"C:\Users\Abhishek\Desktop\Git Projects\AutoML\data\WearableComputing.csv")
     classify = AutoML(df, "income", "classification", "CPU")
