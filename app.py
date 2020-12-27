@@ -190,7 +190,7 @@ class AutoML(object):
                           label = self.y_train,
                           cat_features = self.cat_vars)
 
-        scores = cv(cv_dataset, params, fold_count=3, iterations=100, verbose=100, early_stopping_rounds=5)
+        scores = cv(cv_dataset, params, fold_count=5, iterations=1000, verbose=100, early_stopping_rounds=20)
 
         return - 1 * scores['test-Accuracy-mean'].max()
 
@@ -215,7 +215,7 @@ class AutoML(object):
         print(params)
 
         self.model = CatBoostClassifier(
-            iterations=200,
+            iterations=1000,
             task_type=self.device_type,
             bagging_temperature=params["bagging_temperature"],
             learning_rate=params['learning_rate'],
@@ -228,7 +228,11 @@ class AutoML(object):
             eval_metric='Accuracy'
         )
 
-        self.model.fit(self.X_train, self.y_train, cat_features=self.cat_vars, early_stopping_rounds=5)
+        self.model.fit(self.X_train, self.y_train, 
+                       cat_features=self.cat_vars, 
+                       early_stopping_rounds=20, 
+                       plot=False)
+
         pred = self.model.predict(self.X_test)
         proba = self.model.predict_proba(self.X_test)
 
@@ -241,6 +245,7 @@ class AutoML(object):
             roc_value = roc_auc_score(self.y_test, proba[: , 1])
         
         print("The ROC-AUC of the model is:", roc_value)
+        print("Accuracy of the model is :", accuracy_score(self.y_test, pred))
         #self.roc_auc_metric()
 
         if self.n_classes > 2:
@@ -272,7 +277,7 @@ class AutoML(object):
                           label = self.y_train,
                           cat_features = self.cat_vars)
 
-        scores = cv(cv_dataset, params, fold_count=3, iterations=100, verbose=100, early_stopping_rounds=5)
+        scores = cv(cv_dataset, params, fold_count=3, iterations=200, verbose=100, early_stopping_rounds=20)
         print(scores)
         return scores['test-RMSE-mean'].max()
 
@@ -296,7 +301,7 @@ class AutoML(object):
         print(params)
 
         self.model = CatBoostRegressor(
-            iterations=200,
+            iterations=1000,
             task_type=self.device_type,
             bagging_temperature=params["bagging_temperature"],
             learning_rate=params['learning_rate'],
@@ -306,7 +311,9 @@ class AutoML(object):
             loss_function='RMSE'
         )
 
-        self.model.fit(self.X_train, self.y_train, cat_features=self.cat_vars, early_stopping_rounds=5)
+        self.model.fit(self.X_train, self.y_train, 
+                       cat_features=self.cat_vars, 
+                       early_stopping_rounds=5)
         
         pred = self.model.predict(self.X_test)
         rmse = np.sqrt(mean_squared_error(self.y_test, pred))
@@ -328,20 +335,48 @@ class AutoML(object):
 
 
 if __name__ == "__main__":
-    start = time.time()
-    df = pd.read_csv(r"C:\Users\Abhishek\Downloads\adult.csv")
-    df = df.loc[:, ~df.columns.str.contains('^Unnamed')]
-    #df = pd.read_csv(r"C:\Users\Abhishek\Desktop\Git Projects\AutoML\data\WearableComputing.csv")
-    classify = AutoML(df, "income", "classification", "CPU")
-    #classify = AutoML(df, "classe", "classification", "GPU")
-    classify.class_dist()
-    classify.classification()
+    
+    # start = time.time()
+    # df = pd.read_csv(r"C:\Users\Abhishek\Downloads\adult.csv")
+    # df = df.loc[:, ~df.columns.str.contains('^Unnamed')]
+    # #df = pd.read_csv(r"C:\Users\Abhishek\Desktop\Git Projects\AutoML\data\WearableComputing.csv")
+    # classify = AutoML(df, "income", "classification", "GPU")
+    # #classify = AutoML(df, "classe", "classification", "GPU")
+    # classify.class_dist()
+    # classify.classification()
 
-    # df = pd.read_csv(r"C:\AutoML\data\housing.csv")
-    # reg = AutoML(df, "medv", "regression", "CPU")
-    # reg.regression()
+    # # df = pd.read_csv(r"C:\AutoML\data\housing.csv")
+    # # reg = AutoML(df, "medv", "regression", "CPU")
+    # # reg.regression()
+    # stop = time.time()
+    # total_time = (stop - start)
+
+    # print(f"Time taken for process is {total_time/60} mins.")
+
+    start = time.time()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--path", type=str)
+    parser.add_argument("--target", type=str)
+    parser.add_argument("--type", type=str)
+    parser.add_argument("--deviceType", type=str)
+
+    args = parser.parse_args()
+    df = pd.read_csv(args.path)
+    df = df.loc[:, ~df.columns.str.contains('^Unnamed')]
+    if args.type == "classification":
+        classify = AutoML(df, args.target, args.type, args.deviceType)
+        classify.class_dist()
+        classify.classification()
+
+    elif args.type == "regression":
+        reg = AutoML(df, args.target, args.type, args.deviceType)
+        reg.regression()
+
+    else:
+        ValueError("Invalid argument passed")
+
     stop = time.time()
     total_time = (stop - start)
-
     print(f"Time taken for process is {total_time/60} mins.")
+    # python app.py --path C:\Users\Abhishek\Downloads\adult.csv --target income --type classification --deviceType GPU
 
