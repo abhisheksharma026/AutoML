@@ -34,4 +34,5 @@ import gc
 gc.collect()
 
 pd.pandas.set_option('display.max_columns', None)
+pd.options.mode.chained_assignment = None
 

@@ -30,7 +30,7 @@ class AutoML(object):
             y = p.get_y() + p.get_height()/2
             ax.annotate(percentage, (x,y))
 
-        plt.show()
+        # plt.show()
 
     def extract_cols(self):  
         cat_variables = [var for var in self.cols if self.df[var].dtype == 'O']
@@ -214,6 +214,31 @@ class AutoML(object):
         data = pd.concat([above, stratified, below])
         return data
 
+    def plot_local_shap(self, expected_value, shap_values, X_test, index_to_plot, feature_names, 
+                        matplotlib=True, figsize=(15,3), link='identity', text_rotation=90, save=True,
+                        filename='"shap_local_plot.png'):
+
+                        f = plt.figure()
+
+                        cols = self.X_train.columns
+                        pred = self.model.predict(self.X_test.iloc[index_to_plot:index_to_plot+1, :])[0]
+
+                        feature_names_ext = []
+
+                        for i,j in zip(feature_names, X_test.iloc[index_to_plot, :]):
+                            temp = i + " = " + str(j)
+                            feature_names_ext.append(temp)
+
+                        print(feature_names_ext)
+                        shap.plots.waterfall_plot(expected_value,
+                                            shap_values = shap_values[index_to_plot],
+                                            features = self.X_test[index_to_plot],
+                                            feature_names=feature_names_ext,
+                                            max_display=15)
+                        f.savefig(filename, bbox_inches='tight', dpi=600)
+
+
+
     def catboost_class_cv(self, params, param_names):
 
         params = dict(zip(param_names, params))
@@ -244,7 +269,7 @@ class AutoML(object):
                             cat_features = self.cat_vars)
 
 
-        scores = cv(cv_dataset, params, fold_count=3, iterations=1000, verbose=100, early_stopping_rounds=20)
+        scores = cv(cv_dataset, params, fold_count=3, iterations=200, verbose=100, early_stopping_rounds=50)
 
         return - 1 * scores['test-Accuracy-mean'].max()
 
@@ -261,7 +286,8 @@ class AutoML(object):
         result = gp_minimize(optimization_func,
                              dimensions = hyperparameter_space,
                              n_random_starts = 3,
-                             n_calls= 7,
+                             n_jobs=-1,
+                             n_calls= 5,
                              verbose=True,
                              random_state=42)
 
@@ -269,7 +295,7 @@ class AutoML(object):
         print(params)
 
         self.model = CatBoostClassifier(
-            iterations=1000,
+            iterations=200,
             task_type=self.device_type,
             bagging_temperature=params["bagging_temperature"],
             learning_rate=params['learning_rate'],
@@ -277,7 +303,8 @@ class AutoML(object):
             l2_leaf_reg=params['l2_leaf_reg'],
             border_count = int(params["border_count"]),
             random_seed=42,
-            verbose=100,
+            verbose=200,
+            thread_count=-1,
             loss_function=self.objective,
             eval_metric='Accuracy'
         )
@@ -294,6 +321,12 @@ class AutoML(object):
 
         pred = self.model.predict(self.X_test)
         proba = self.model.predict_proba(self.X_test)
+
+        importances = pd.DataFrame(self.model.get_feature_importance(prettified=True), columns = ["Feature Id", "Importances"])
+        print()
+        print(importances.head(20))
+        print()
+        print("Most Important Feature:", importances["Feature Id"][0])
 
         if self.n_classes > 2:
             multi_class = 'ovo'
@@ -313,9 +346,13 @@ class AutoML(object):
             else:
                 shap_values = self.model.get_feature_importance(Pool(self.X_test, self.y_test, cat_features = self.cat_vars), type='ShapValues')
             original_shape = shap_values.shape
-            print("Original Shape:", original_shape)
-            shap_values_reshaped = shap_values.reshape(original_shape[1], original_shape[0], original_shape[-1])
-            shap_values = shap_values_reshaped[:, :, :-1]
+            print("Original Shap Shape:", original_shape)
+
+            print("Original SHAP values", shap_values.head())
+
+            shap_values_reshaped = shap_values.transpose(original_shape[1], original_shape[0], original_shape[-1]) #(1,0,2) # (samples, classes, features)
+            shap_values = shap_values_reshaped[:, :, :-1] # (samples, features)
+            expected_value = shap_values[:, -1][0]
 
             shap.summary_plot(list(shap_values), features = self.X_train, class_names = self.classes, plot_type='bar')
 
@@ -325,10 +362,15 @@ class AutoML(object):
             else:
                 shap_values = self.model.get_feature_importance(Pool(self.X_test, self.y_test, cat_features = self.cat_vars), type='ShapValues')
             
+            expected_value = shap_values[:, -1][0]
             shap_values = shap_values[:, :-1]
             shap.summary_plot(shap_values, features = self.X_test, class_names = self.classes.tolist(), plot_type='bar')
 
-        print("Model Finished Running")
+        index_to_plot = np.random.randint(0, self.X_test.shape[0]-2)
+        print("Plotting Index :", index_to_plot)
+        self.plot_local_shap(expected_value, shap_values, self.X_test, index_to_plot, self.X_train.columns)
+
+        print("Classification Model Finished Running")
 
     def catboost_reg_cv(self, params, param_names):
     
@@ -347,7 +389,7 @@ class AutoML(object):
                             label = self.y_train,
                             cat_features = self.cat_vars)
 
-        scores = cv(cv_dataset, params, fold_count=3, iterations=200, verbose=100, early_stopping_rounds=20)
+        scores = cv(cv_dataset, params, fold_count=3, iterations=200, verbose=100, early_stopping_rounds=50)
         return scores['test-RMSE-mean'].max()
 
 
@@ -362,7 +404,7 @@ class AutoML(object):
                              dimensions = reg_hyperparameter_space,
                              n_random_starts = 3,
                              n_jobs=-1,
-                             n_calls= 7,
+                             n_calls= 5,
                              verbose=True,
                              random_state=42)
 
@@ -375,6 +417,7 @@ class AutoML(object):
             bagging_temperature=params["bagging_temperature"],
             learning_rate=params['learning_rate'],
             depth=int(params['depth']),
+            thread_count=-1,
             random_seed=42,
             verbose=100,
             loss_function='RMSE'
@@ -382,7 +425,7 @@ class AutoML(object):
 
         self.model.fit(self.X_train, self.y_train, 
                        cat_features=self.cat_vars, 
-                       early_stopping_rounds=5)
+                       early_stopping_rounds=50)
         
         pred = self.model.predict(self.X_test)
         rmse = np.sqrt(mean_squared_error(self.y_test, pred))
@@ -395,6 +438,7 @@ class AutoML(object):
         print()
         print(importances.head(20))
         print()
+        print("Most Important Feature:", importances["Feature Id"][0])
 
         if self.dummy:
             shap_values = self.model.get_feature_importance(Pool(self.X_test, self.y_test), type = "ShapValues")
@@ -438,7 +482,7 @@ if __name__ == "__main__":
     df = df.loc[:, ~df.columns.str.contains('^Unnamed')]
     if args.type == "classification":
         classify = AutoML(df, args.target, args.type, args.deviceType)
-        classify.class_dist()
+        # classify.class_dist()
         classify.classification()
 
     elif args.type == "regression":
