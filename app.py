@@ -5,7 +5,7 @@ class AutoML(object):
 
     X_train, X_test, y_train, y_test = None, None, None, None
 
-    def __init__(self, df, target, type, device_type = "CPU"):
+    def __init__(self, df, target, type, dummy = True, device_type = "CPU"):
         self.df = df
         self.cols = df.columns.tolist()
         self.target = target
@@ -13,6 +13,7 @@ class AutoML(object):
         self.cat_vars = []
         self.model = None
         self.device_type = device_type
+        self.dummy = dummy
 
     def __repr__(self):
         return repr(self.df.head())
@@ -35,6 +36,7 @@ class AutoML(object):
         cat_variables = [var for var in self.cols if self.df[var].dtype == 'O']
         self.cat_vars = [s for s in cat_variables if s != self.target]
 
+
     def class_splitting(self):
         self.cols = [cols for cols in self.cols if cols != self.target]
         num_variables = [var for var in self.df.columns if self.df[var].dtype != 'O']
@@ -51,6 +53,30 @@ class AutoML(object):
         self.classes = np.unique(y)
         self.n_classes = len(self.classes)
         X_train, X_test, y_train, y_test = train_test_split(X, y, stratify = y, test_size= 0.3, random_state=42)
+
+        for col in self.cat_vars:
+            X_train[col] = X_train[col].astype('category')
+            X_test[col] = X_test[col].astype('category')
+
+        if self.dummy:
+            for col in self.cat_vars:
+                dummy = pd.get_dummies(pd.Series(X_train[col].astype(str)), prefix=col+"_", drop_first=True)
+                dummy.index = X_train.index
+                X_train = pd.concat([X_train, dummy], axis=1, sort=False)
+
+                dummy = pd.get_dummies(pd.Series(X_test[col].astype(str)), prefix=col+"_", drop_first=True)
+                dummy.index = X_test.index
+                X_test = pd.concat([X_test, dummy], axis=1, sort=False)
+
+            X_train.drop(columns=self.cat_vars, inplace=True, axis=1)
+            X_test.drop(columns=self.cat_vars, inplace=True, axis=1)
+
+            missedCol = list(set(X_train.columns) - set(X_train.columns).intersection(set(X_test.columns)))
+            for col in missedCol:
+                X_test[col] = [0] * len(X_test)
+
+            X_train, X_test = X_train.align(X_test, join='left', axis=1)
+
         self.lb = LabelEncoder()
         y_train = self.lb.fit_transform(y_train)
         y_test = self.lb.transform(y_test)
@@ -71,6 +97,29 @@ class AutoML(object):
         y = self.df[self.target]
 
         X_train, X_test, y_train, y_test = train_test_split(X, y, test_size= 0.3, random_state=42)
+
+        for col in self.cat_vars:
+            X_train[col] = X_train[col].astype('category')
+            X_test[col] = X_test[col].astype('category')
+
+        if self.dummy:
+            for col in self.cat_vars:
+                dummy = pd.get_dummies(pd.Series(X_train[col].astype(str)), prefix=col+"_", drop_first=True)
+                dummy.index = X_train.index
+                X_train = pd.concat([X_train, dummy], axis=1, sort=False)
+
+                dummy = pd.get_dummies(pd.Series(X_test[col].astype(str)), prefix=col+"_", drop_first=True)
+                dummy.index = X_test.index
+                X_test = pd.concat([X_test, dummy], axis=1, sort=False)
+
+            X_train.drop(columns=self.cat_vars, inplace=True, axis=1)
+            X_test.drop(columns=self.cat_vars, inplace=True, axis=1)
+
+            missedCol = list(set(X_train.columns) - set(X_train.columns).intersection(set(X_test.columns)))
+            for col in missedCol:
+                X_test[col] = [0] * len(X_test)
+
+            X_train, X_test = X_train.align(X_test, join='left', axis=1)
 
         return X_train, X_test, y_train, y_test
 
@@ -186,11 +235,16 @@ class AutoML(object):
         params['loss_function'] = self.objective
         params['eval_metric'] = 'Accuracy'
 
-        cv_dataset = Pool(data=self.X_train,
-                          label = self.y_train,
-                          cat_features = self.cat_vars)
+        if self.dummy:
+            cv_dataset = Pool(data=self.X_train,
+                            label = self.y_train)
+        else:
+            cv_dataset = Pool(data=self.X_train,
+                            label = self.y_train,
+                            cat_features = self.cat_vars)
 
-        scores = cv(cv_dataset, params, fold_count=5, iterations=1000, verbose=100, early_stopping_rounds=20)
+
+        scores = cv(cv_dataset, params, fold_count=3, iterations=1000, verbose=100, early_stopping_rounds=20)
 
         return - 1 * scores['test-Accuracy-mean'].max()
 
@@ -228,10 +282,15 @@ class AutoML(object):
             eval_metric='Accuracy'
         )
 
-        self.model.fit(self.X_train, self.y_train, 
-                       cat_features=self.cat_vars, 
-                       early_stopping_rounds=20, 
-                       plot=False)
+        if self.dummy:
+            self.model.fit(self.X_train, self.y_train,
+                        early_stopping_rounds=50, 
+                        plot=False)
+        else:
+            self.model.fit(self.X_train, self.y_train, 
+                        cat_features=self.cat_vars, 
+                        early_stopping_rounds=50, 
+                        plot=False)
 
         pred = self.model.predict(self.X_test)
         proba = self.model.predict_proba(self.X_test)
@@ -249,7 +308,10 @@ class AutoML(object):
         #self.roc_auc_metric()
 
         if self.n_classes > 2:
-            shap_values = self.model.get_feature_importance(Pool(self.X_test, self.y_test, cat_features = self.cat_vars), type='ShapValues')
+            if self.dummy:
+                shap_values = self.model.get_feature_importance(Pool(self.X_test, self.y_test), type='ShapValues')
+            else:
+                shap_values = self.model.get_feature_importance(Pool(self.X_test, self.y_test, cat_features = self.cat_vars), type='ShapValues')
             original_shape = shap_values.shape
             print("Original Shape:", original_shape)
             shap_values_reshaped = shap_values.reshape(original_shape[1], original_shape[0], original_shape[-1])
@@ -258,7 +320,11 @@ class AutoML(object):
             shap.summary_plot(list(shap_values), features = self.X_train, class_names = self.classes, plot_type='bar')
 
         else:
-            shap_values = self.model.get_feature_importance(Pool(self.X_test, self.y_test, cat_features = self.cat_vars), type='ShapValues')
+            if self.dummy:
+                shap_values = self.model.get_feature_importance(Pool(self.X_test, self.y_test), type='ShapValues')
+            else:
+                shap_values = self.model.get_feature_importance(Pool(self.X_test, self.y_test, cat_features = self.cat_vars), type='ShapValues')
+            
             shap_values = shap_values[:, :-1]
             shap.summary_plot(shap_values, features = self.X_test, class_names = self.classes.tolist(), plot_type='bar')
 
@@ -273,12 +339,15 @@ class AutoML(object):
 
         params['loss_function'] = 'RMSE'
 
-        cv_dataset = Pool(data=self.X_train,
-                          label = self.y_train,
-                          cat_features = self.cat_vars)
+        if self.dummy:
+            cv_dataset = Pool(data=self.X_train,
+                            label = self.y_train)
+        else:
+            cv_dataset = Pool(data=self.X_train,
+                            label = self.y_train,
+                            cat_features = self.cat_vars)
 
         scores = cv(cv_dataset, params, fold_count=3, iterations=200, verbose=100, early_stopping_rounds=20)
-        print(scores)
         return scores['test-RMSE-mean'].max()
 
 
@@ -326,7 +395,11 @@ class AutoML(object):
         print()
         print(importances.head(20))
         print()
-        shap_values = self.model.get_feature_importance(Pool(self.X_test, self.y_test, cat_features=self.cat_vars), type = "ShapValues")
+
+        if self.dummy:
+            shap_values = self.model.get_feature_importance(Pool(self.X_test, self.y_test), type = "ShapValues")
+        else:
+            shap_values = self.model.get_feature_importance(Pool(self.X_test, self.y_test, cat_features=self.cat_vars), type = "ShapValues")
         shap_values = shap_values[:,:-1]
 
         shap.summary_plot(shap_values, self.X_test)
@@ -379,4 +452,4 @@ if __name__ == "__main__":
     total_time = (stop - start)
     print(f"Time taken for process is {total_time/60} mins.")
     # python app.py --path C:\Users\Abhishek\Downloads\adult.csv --target income --type classification --deviceType GPU
-
+    # python app.py --path C:\Users\Abhishek\Downloads\housing.csv --target medv --type regression --deviceType GPU
